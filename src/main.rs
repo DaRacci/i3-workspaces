@@ -2,10 +2,10 @@ use i3_ipc::event::{Event, Subscribe, WorkspaceChange};
 use i3_ipc::reply::{Node, Workspace};
 use i3_ipc::{Connect, I3Stream, I3};
 use indoc::{formatdoc, indoc};
-use std::borrow::{Borrow};
+use std::borrow::Borrow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::{env, io, process};
-use std::cell::RefCell;
 
 const BOX: &str = indoc! {"
     (box :class 'i3wm-workspaces'
@@ -59,7 +59,10 @@ fn main() -> io::Result<()> {
                     WorkspaceChange::Focus => {
                         // Focused a new workspace, may also call init or empty
                         let mut workspace = e.old.unwrap();
-                        let (mut key, mut name) = get_name_key_from_node(&workspace).unwrap();
+                        let (mut key, mut name) = match get_name_key_from_node(&workspace) {
+                            None => continue,
+                            Some(i) => i,
+                        };
 
                         if map.contains_key(&key) {
                             match i3
@@ -156,21 +159,27 @@ fn get_name_key_from_node(node: &Node) -> Option<(usize, String)> {
 fn get_name_key<'a>(id: &'a usize, name: &'a str) -> Option<(usize, String)> {
     NAME_KEY.with(|r| {
         let mut map = r.borrow_mut();
+
         if !map.contains_key(id) {
-            map.insert(
-                *id,
-                name.split_once(";").map_or_else(
-                    || (name.parse::<usize>().unwrap(), name.to_string()),
-                    |(num, s_name)| {
-                        let mut name = s_name.to_string();
-                        name.retain(|c| !c.is_ascii());
-                        if name.len() == 0 {
-                            name.push('');
-                        }
-                        (num.parse().unwrap(), name)
-                    },
-                ),
-            );
+            match &name.split_once(';') {
+                Some((num, str)) => {
+                    let mut name = str.to_string();
+                    let key = match num.parse::<usize>() {
+                        Ok(k) => k,
+                        Err(_) => None?,
+                    };
+                    name.retain(|c| !c.is_ascii());
+                    name = format!("{}", name);
+                    map.insert(*id, (key, name));
+                }
+                None => {
+                    let key = match name.parse::<usize>() {
+                        Ok(k) => k,
+                        Err(_) => None?,
+                    };
+                    map.insert(*id, (key, format!("{}", name.to_string())));
+                }
+            }
         };
         return map.get(id).cloned();
     })
@@ -187,7 +196,10 @@ fn print_initial(i3: &mut I3Stream, map: &mut BTreeMap<usize, String>, monitor: 
             Some(w) => w,
         };
 
-        map.insert(key, get_button(&key, &name, &get_visibility_workspace(&workspace)));
+        map.insert(
+            key,
+            get_button(&key, &name, &get_visibility_workspace(&workspace)),
+        );
     }
     print_workspaces(map);
 }
